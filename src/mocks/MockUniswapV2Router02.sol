@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./MockUniswapV2Pair.sol";
-import "./MockERC20.sol";
-import "./MockWETH9.sol";
-import "../interfaces/IUniswapV2Router02.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {MockUniswapV2Pair} from "./MockUniswapV2Pair.sol";
+import {IUniswapV2Router02} from "../interfaces/IUniswapV2Router02.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract MockUniswapV2Router02 is IUniswapV2Router02 {
+    using SafeERC20 for IERC20;
+
     address public immutable override WETH;
     MockUniswapV2Pair public pair;
     IERC20 public usdc;
@@ -40,7 +41,7 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
 
         if (amountToken < amountTokenMin || amountETH < amountETHMin) revert("SLIPPAGE");
 
-        require(usdc.transferFrom(msg.sender, address(this), amountToken), "USDC_TRANSFER");
+        usdc.safeTransferFrom(msg.sender, address(this), amountToken);
         uint256 beforeLp = pair.balanceOf(to);
         liquidity = _liquidity(amountETH, amountToken);
         pair.mint(to, liquidity);
@@ -81,7 +82,7 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
 
         (bool ok,) = payable(to).call{value: amountETH}("");
         require(ok, "ETH_SEND");
-        require(usdc.transfer(to, amountToken), "USDC_SEND");
+        usdc.safeTransfer(to, amountToken);
     }
 
     function swapExactTokensForTokens(
@@ -97,7 +98,7 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
         address tokenOut = path[1];
         require((tokenIn == address(usdc) && tokenOut == WETH) || (tokenIn == WETH && tokenOut == address(usdc)), "PAIR");
 
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(this), amountIn);
         uint256 amountOut = getAmountsOut(amountIn, path)[1];
         require(amountOut >= amountOutMin, "MIN_OUT");
 
@@ -118,7 +119,7 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
             pair.setReserves(reserveOut - amountOutCheck, reserveIn + amountIn);
         }
 
-        require(IERC20(tokenOut).transfer(to, amountOutCheck), "OUT_TRANSFER");
+        IERC20(tokenOut).safeTransfer(to, amountOutCheck);
         amounts[1] = amountOutCheck;
     }
 
