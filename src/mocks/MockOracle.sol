@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "../interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "../interfaces/AggregatorV3Interface.sol";
 
 contract MockOracle is AggregatorV3Interface {
     int256 private _answer;
-    uint8 private immutable _decimals;
+    uint8 private immutable _DECIMALS;
     string private _description;
 
     constructor(int256 answer_, uint8 decimals_, string memory description_) {
         _answer = answer_;
-        _decimals = decimals_;
+        _DECIMALS = decimals_;
         _description = description_;
     }
 
@@ -18,7 +18,7 @@ contract MockOracle is AggregatorV3Interface {
         _answer = answer_;
     }
 
-    function decimals() external view override returns (uint8) { return _decimals; }
+    function decimals() external view override returns (uint8) { return _DECIMALS; }
     function description() external view override returns (string memory) { return _description; }
     function version() external pure override returns (uint256) { return 1; }
 

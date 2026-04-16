@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./MockERC20.sol";
+import {MockERC20} from "./MockERC20.sol";
 
 contract MockUniswapV2Pair is MockERC20 {
-    address public immutable token0;
-    address public immutable token1;
+    address public immutable TOKEN0;
+    address public immutable TOKEN1;
     address public router;
 
     uint112 private reserve0;
@@ -13,14 +13,26 @@ contract MockUniswapV2Pair is MockERC20 {
     uint32 private blockTimestampLast;
 
     modifier onlyRouter() {
-        require(msg.sender == router, "NOT_ROUTER");
+        _onlyRouter();
         _;
     }
 
     constructor(address token0_, address token1_, address router_) MockERC20("Uniswap V2 LP", "UNI-V2", 18) {
-        token0 = token0_;
-        token1 = token1_;
+        TOKEN0 = token0_;
+        TOKEN1 = token1_;
         router = router_;
+    }
+
+    function _onlyRouter() internal view {
+        require(msg.sender == router, "NOT_ROUTER");
+    }
+
+    function token0() external view returns (address) {
+        return TOKEN0;
+    }
+
+    function token1() external view returns (address) {
+        return TOKEN1;
     }
 
     function setRouter(address router_) external onlyRouter {
@@ -46,7 +58,9 @@ contract MockUniswapV2Pair is MockERC20 {
 
     function setReserves(uint256 newReserve0, uint256 newReserve1) external onlyRouter {
         require(newReserve0 <= type(uint112).max && newReserve1 <= type(uint112).max, "OVERFLOW");
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve0 = uint112(newReserve0);
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve1 = uint112(newReserve1);
         blockTimestampLast = uint32(block.timestamp);
     }
@@ -59,11 +73,13 @@ contract MockUniswapV2Pair is MockERC20 {
         }
         uint256 newReserveEth;
         uint256 newReserveUsdc;
-        if (token0 == address(0)) revert("TOKEN0");
+        if (TOKEN0 == address(0)) revert("TOKEN0");
         // token0 is expected to be WETH in the tests
         newReserveEth = _sqrt((k * 1e18) / newPriceUsdcPerEth6);
         newReserveUsdc = k / newReserveEth;
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve0 = uint112(newReserveEth);
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve1 = uint112(newReserveUsdc);
         blockTimestampLast = uint32(block.timestamp);
     }

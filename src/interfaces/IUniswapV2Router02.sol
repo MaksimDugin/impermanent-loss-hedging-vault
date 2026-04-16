@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
+// forge-lint: disable-file(mixed-case-function)
 
 interface IUniswapV2Router02 {
     function WETH() external view returns (address);
@@ -8,19 +9,19 @@ interface IUniswapV2Router02 {
         address token,
         uint256 amountTokenDesired,
         uint256 amountTokenMin,
-        uint256 amountETHMin,
+        uint256 amountEthMin,
         address to,
         uint256 deadline
-    ) external payable returns (uint256 amountToken, uint256 amountETH, uint256 liquidity);
+    ) external payable returns (uint256 amountToken, uint256 amountEth, uint256 liquidity);
 
     function removeLiquidityETH(
         address token,
         uint256 liquidity,
         uint256 amountTokenMin,
-        uint256 amountETHMin,
+        uint256 amountEthMin,
         address to,
         uint256 deadline
-    ) external returns (uint256 amountToken, uint256 amountETH);
+    ) external returns (uint256 amountToken, uint256 amountEth);
 
     function swapExactTokensForTokens(
         uint256 amountIn,
