@@ -9,10 +9,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 contract MockAavePool is IPool {
     using SafeERC20 for IERC20;
 
-    MockWETH9 public immutable weth;
+    MockWETH9 public immutable WETH;
 
     constructor(address weth_) {
-        weth = MockWETH9(payable(weth_));
+        WETH = MockWETH9(payable(weth_));
     }
 
     function supply(address asset, uint256 amount, address onBehalfOf, uint16) external override {
@@ -23,12 +23,12 @@ contract MockAavePool is IPool {
     }
 
     function borrow(address asset, uint256 amount, uint256, uint16, address onBehalfOf) external override {
-        require(asset == address(weth), "ASSET");
-        weth.mint(onBehalfOf, amount);
+        require(asset == address(WETH), "ASSET");
+        WETH.mint(onBehalfOf, amount);
     }
 
     function repay(address asset, uint256 amount, uint256, address onBehalfOf) external override returns (uint256) {
-        require(asset == address(weth), "ASSET");
+        require(asset == address(WETH), "ASSET");
         uint256 balance = IERC20(asset).balanceOf(msg.sender);
         if (balance < amount) {
             amount = balance;

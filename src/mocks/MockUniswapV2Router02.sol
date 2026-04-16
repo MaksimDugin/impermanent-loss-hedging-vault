@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
+// forge-lint: disable-file(mixed-case-function)
 
 import {MockUniswapV2Pair} from "./MockUniswapV2Pair.sol";
 import {IUniswapV2Router02} from "../interfaces/IUniswapV2Router02.sol";
@@ -12,11 +13,9 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
     address public immutable override WETH;
     MockUniswapV2Pair public pair;
     IERC20 public usdc;
-    IERC20 public wethToken;
 
     constructor(address weth_, address usdc_) {
         WETH = weth_;
-        wethToken = IERC20(weth_);
         usdc = IERC20(usdc_);
     }
 
@@ -28,24 +27,24 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
         address token,
         uint256 amountTokenDesired,
         uint256 amountTokenMin,
-        uint256 amountETHMin,
+        uint256 amountEthMin,
         address to,
         uint256 deadline
-    ) external payable override returns (uint256 amountToken, uint256 amountETH, uint256 liquidity) {
+    ) external payable override returns (uint256 amountToken, uint256 amountEth, uint256 liquidity) {
         require(block.timestamp <= deadline, "DEADLINE");
         require(token == address(usdc), "TOKEN");
-        require(msg.value >= amountETHMin, "ETH_MIN");
+        require(msg.value >= amountEthMin, "ETH_MIN");
 
         amountToken = amountTokenDesired;
-        amountETH = msg.value;
+        amountEth = msg.value;
 
-        if (amountToken < amountTokenMin || amountETH < amountETHMin) revert("SLIPPAGE");
+        if (amountToken < amountTokenMin || amountEth < amountEthMin) revert("SLIPPAGE");
 
         usdc.safeTransferFrom(msg.sender, address(this), amountToken);
         uint256 beforeLp = pair.balanceOf(to);
-        liquidity = _liquidity(amountETH, amountToken);
+        liquidity = _liquidity(amountEth, amountToken);
         pair.mint(to, liquidity);
-        _syncAfterAdd(amountETH, amountToken);
+        _syncAfterAdd(amountEth, amountToken);
         liquidity = pair.balanceOf(to) - beforeLp;
     }
 
@@ -53,10 +52,10 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
         address token,
         uint256 liquidity,
         uint256 amountTokenMin,
-        uint256 amountETHMin,
+        uint256 amountEthMin,
         address to,
         uint256 deadline
-    ) external override returns (uint256 amountToken, uint256 amountETH) {
+    ) external override returns (uint256 amountToken, uint256 amountEth) {
         require(block.timestamp <= deadline, "DEADLINE");
         require(token == address(usdc), "TOKEN");
         uint256 supply = pair.totalSupply();
@@ -69,18 +68,18 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
         uint256 shareNum = liquidity;
         uint256 shareDen = supply;
 
-        amountETH = reserveEth * shareNum / shareDen;
+        amountEth = reserveEth * shareNum / shareDen;
         amountToken = reserveUsdc * shareNum / shareDen;
-        if (amountETH < amountETHMin || amountToken < amountTokenMin) revert("SLIPPAGE");
+        if (amountEth < amountEthMin || amountToken < amountTokenMin) revert("SLIPPAGE");
 
         pair.burn(msg.sender, liquidity);
         if (pair.token0() == WETH) {
-            pair.setReserves(reserveEth - amountETH, reserveUsdc - amountToken);
+            pair.setReserves(reserveEth - amountEth, reserveUsdc - amountToken);
         } else {
-            pair.setReserves(reserveUsdc - amountToken, reserveEth - amountETH);
+            pair.setReserves(reserveUsdc - amountToken, reserveEth - amountEth);
         }
 
-        (bool ok,) = payable(to).call{value: amountETH}("");
+        (bool ok,) = payable(to).call{value: amountEth}("");
         require(ok, "ETH_SEND");
         usdc.safeTransfer(to, amountToken);
     }
@@ -145,17 +144,17 @@ contract MockUniswapV2Router02 is IUniswapV2Router02 {
         pair.reprice(newPriceUsdcPerEth6);
     }
 
-    function _liquidity(uint256 amountETH, uint256 amountUSDC) internal pure returns (uint256) {
-        uint256 normalizedUsdc = amountUSDC * 1e12;
-        return _sqrt(amountETH * normalizedUsdc);
+    function _liquidity(uint256 amountEth, uint256 amountUsdc) internal pure returns (uint256) {
+        uint256 normalizedUsdc = amountUsdc * 1e12;
+        return _sqrt(amountEth * normalizedUsdc);
     }
 
-    function _syncAfterAdd(uint256 amountETH, uint256 amountUSDC) internal {
+    function _syncAfterAdd(uint256 amountEth, uint256 amountUsdc) internal {
         (uint112 r0, uint112 r1,) = pair.getReserves();
         if (pair.token0() == WETH) {
-            pair.setReserves(uint256(r0) + amountETH, uint256(r1) + amountUSDC);
+            pair.setReserves(uint256(r0) + amountEth, uint256(r1) + amountUsdc);
         } else {
-            pair.setReserves(uint256(r0) + amountUSDC, uint256(r1) + amountETH);
+            pair.setReserves(uint256(r0) + amountUsdc, uint256(r1) + amountEth);
         }
     }
 

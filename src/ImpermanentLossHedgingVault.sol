@@ -28,7 +28,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     error DeadlineExpired();
     error NotEnoughLiquidity();
 
-    event Deposited(address indexed user, uint256 amountETH, uint256 amountUSDC, uint256 lpMinted, uint256 debtOpened);
+    event Deposited(address indexed user, uint256 amountEth, uint256 amountUsdc, uint256 lpMinted, uint256 debtOpened);
     event Withdrawn(address indexed user, uint256 lpBurned, uint256 ethOut, uint256 usdcOut, uint256 debtRepaid);
     event Rebalanced(uint256 targetDebt, uint256 currentDebt, uint256 deltaAbs, bool increased);
     event ParamsUpdated(uint256 rebalanceThresholdBps, uint256 slippageBps, uint256 rebalanceIntervalBlocks);
@@ -84,39 +84,39 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
 
     /// @notice Deposit ETH + USDC, add liquidity to Uniswap V2, then open/adjust the short hedge on Aave.
     /// @dev Slippage and fee assumptions matter here: the router quote is used only as a minimum bound.
-    function deposit(uint256 amountETH, uint256 amountUSDC) external payable nonReentrant whenNotPaused {
-        if (amountETH == 0 || amountUSDC == 0) revert ZeroAmount();
-        if (msg.value != amountETH) revert ZeroAmount();
+    function deposit(uint256 amountEth, uint256 amountUsdc) external payable nonReentrant whenNotPaused {
+        if (amountEth == 0 || amountUsdc == 0) revert ZeroAmount();
+        if (msg.value != amountEth) revert ZeroAmount();
 
-        uint256 balanceBeforeUSDC = USDC.balanceOf(address(this));
-        uint256 ethBalanceBefore = address(this).balance - amountETH;
+        uint256 balanceBeforeUsdc = USDC.balanceOf(address(this));
+        uint256 ethBalanceBefore = address(this).balance - amountEth;
 
-        USDC.safeTransferFrom(msg.sender, address(this), amountUSDC);
+        USDC.safeTransferFrom(msg.sender, address(this), amountUsdc);
         USDC.forceApprove(address(ROUTER), 0);
-        USDC.forceApprove(address(ROUTER), amountUSDC);
+        USDC.forceApprove(address(ROUTER), amountUsdc);
 
-        uint256 minToken = _applyBps(amountUSDC, 10_000 - slippageBps);
-        uint256 minEth = _applyBps(amountETH, 10_000 - slippageBps);
+        uint256 minToken = _applyBps(amountUsdc, 10_000 - slippageBps);
+        uint256 minEth = _applyBps(amountEth, 10_000 - slippageBps);
 
-        (, , uint256 liquidity) = ROUTER.addLiquidityETH{value: amountETH}(
+        (, , uint256 liquidity) = ROUTER.addLiquidityETH{value: amountEth}(
             address(USDC),
-            amountUSDC,
+            amountUsdc,
             minToken,
             minEth,
             address(this),
             block.timestamp + 15 minutes
         );
 
-        uint256 usdcUsed = balanceBeforeUSDC + amountUSDC - USDC.balanceOf(address(this));
-        uint256 ethUsed = ethBalanceBefore + amountETH - address(this).balance;
-        uint256 ethRefund = amountETH - ethUsed;
+        uint256 usdcUsed = balanceBeforeUsdc + amountUsdc - USDC.balanceOf(address(this));
+        uint256 ethUsed = ethBalanceBefore + amountEth - address(this).balance;
+        uint256 ethRefund = amountEth - ethUsed;
 
         if (ethRefund > 0) {
             (bool ok,) = msg.sender.call{value: ethRefund}("");
             require(ok, "ETH_REFUND_FAILED");
         }
 
-        uint256 usdcRefund = amountUSDC - usdcUsed;
+        uint256 usdcRefund = amountUsdc - usdcUsed;
         if (usdcRefund > 0) {
             USDC.safeTransfer(msg.sender, usdcRefund);
         }
@@ -254,6 +254,9 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         uint256 lpValue = _currentLpValue1e18(price);
         uint256 hodlValue = _hodlValue1e18(price);
         if (hodlValue == 0) return 0;
+        // casting to 'int256' is safe because lpValue and hodlValue represent bounded vault accounting values
+        // and their ratio scaled by 1e18 remains well below int256 max in this MVP.
+        // forge-lint: disable-next-line(unsafe-typecast)
         int256 ratio = int256((lpValue * 1e18) / hodlValue);
         return ratio - int256(1e18);
     }
@@ -328,6 +331,15 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         uint256 wethBal = IERC20(address(WETH)).balanceOf(address(this));
         if (wethBal < amountWeth) {
             uint256 missingWeth = amountWeth - wethBal;
+            uint256 ethBalance = address(this).balance;
+            if (ethBalance > 0) {
+                uint256 ethToWrap = missingWeth < ethBalance ? missingWeth : ethBalance;
+                WETH.deposit{value: ethToWrap}();
+                wethBal += ethToWrap;
+            }
+        }
+        if (wethBal < amountWeth) {
+            uint256 missingWeth = amountWeth - wethBal;
             uint256 usdcNeeded = _quoteExactOut(address(USDC), address(WETH), missingWeth);
             uint256 usdcBalance = USDC.balanceOf(address(this));
             if (usdcNeeded > usdcBalance) {
@@ -352,6 +364,15 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
 
     function _repayDebtWithAvailableBalances(uint256 amountWeth) internal returns (uint256 debtClosed) {
         uint256 wethBal = IERC20(address(WETH)).balanceOf(address(this));
+        if (wethBal < amountWeth) {
+            uint256 missingWeth = amountWeth - wethBal;
+            uint256 ethBalance = address(this).balance;
+            if (ethBalance > 0) {
+                uint256 ethToWrap = missingWeth < ethBalance ? missingWeth : ethBalance;
+                WETH.deposit{value: ethToWrap}();
+                wethBal += ethToWrap;
+            }
+        }
         if (wethBal < amountWeth) {
             uint256 missingWeth = amountWeth - wethBal;
             uint256 usdcNeeded = _quoteExactOut(address(USDC), address(WETH), missingWeth);
@@ -420,6 +441,8 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         (, int256 answer,, uint256 updatedAt,) = ETH_USD_ORACLE.latestRoundData();
         if (answer <= 0) revert PriceFeedStale();
         if (block.timestamp - updatedAt > minOracleStaleness) revert PriceFeedStale();
+        // casting to 'uint256' is safe because answer <= 0 is already rejected above.
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint256 raw = uint256(answer);
         if (ORACLE_DECIMALS >= 18) {
             return raw / (10 ** (ORACLE_DECIMALS - 18));
