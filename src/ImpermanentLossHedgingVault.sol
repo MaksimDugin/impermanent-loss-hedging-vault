@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./interfaces/IUniswapV2Router02.sol";
-import "./interfaces/IUniswapV2Pair.sol";
-import "./interfaces/IPool.sol";
-import "./interfaces/AggregatorV3Interface.sol";
-import "./interfaces/IWETH9.sol";
+import {IUniswapV2Router02} from "./interfaces/IUniswapV2Router02.sol";
+import {IUniswapV2Pair} from "./interfaces/IUniswapV2Pair.sol";
+import {IPool} from "./interfaces/IPool.sol";
+import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {IWETH9} from "./interfaces/IWETH9.sol";
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 
 /// @title Delta-Neutral Liquidity Vault
@@ -35,15 +35,15 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     event PausedVault();
     event UnpausedVault();
 
-    IUniswapV2Router02 public immutable router;
-    IUniswapV2Pair public immutable pair;
-    IPool public immutable pool;
-    AggregatorV3Interface public immutable ethUsdOracle;
-    IERC20 public immutable usdc;
-    IWETH9 public immutable weth;
+    IUniswapV2Router02 public immutable ROUTER;
+    IUniswapV2Pair public immutable PAIR;
+    IPool public immutable POOL;
+    AggregatorV3Interface public immutable ETH_USD_ORACLE;
+    IERC20 public immutable USDC;
+    IWETH9 public immutable WETH;
 
-    uint8 public immutable usdcDecimals;
-    uint8 public immutable oracleDecimals;
+    uint8 public immutable USDC_DECIMALS;
+    uint8 public immutable ORACLE_DECIMALS;
 
     uint256 public rebalanceThresholdBps = 100; // 1%
     uint256 public slippageBps = 100; // 1%
@@ -69,14 +69,14 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         address weth_,
         uint8 usdcDecimals_
     ) Ownable(initialOwner) {
-        router = IUniswapV2Router02(router_);
-        pair = IUniswapV2Pair(pair_);
-        pool = IPool(pool_);
-        ethUsdOracle = AggregatorV3Interface(oracle_);
-        usdc = IERC20(usdc_);
-        weth = IWETH9(weth_);
-        usdcDecimals = usdcDecimals_;
-        oracleDecimals = ethUsdOracle.decimals();
+        ROUTER = IUniswapV2Router02(router_);
+        PAIR = IUniswapV2Pair(pair_);
+        POOL = IPool(pool_);
+        ETH_USD_ORACLE = AggregatorV3Interface(oracle_);
+        USDC = IERC20(usdc_);
+        WETH = IWETH9(weth_);
+        USDC_DECIMALS = usdcDecimals_;
+        ORACLE_DECIMALS = ETH_USD_ORACLE.decimals();
 
         _validatePair();
         _approveInfinite();
@@ -88,18 +88,18 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         if (amountETH == 0 || amountUSDC == 0) revert ZeroAmount();
         if (msg.value != amountETH) revert ZeroAmount();
 
-        uint256 balanceBeforeUSDC = usdc.balanceOf(address(this));
+        uint256 balanceBeforeUSDC = USDC.balanceOf(address(this));
         uint256 ethBalanceBefore = address(this).balance - amountETH;
 
-        usdc.safeTransferFrom(msg.sender, address(this), amountUSDC);
-        usdc.forceApprove(address(router), 0);
-        usdc.forceApprove(address(router), amountUSDC);
+        USDC.safeTransferFrom(msg.sender, address(this), amountUSDC);
+        USDC.forceApprove(address(ROUTER), 0);
+        USDC.forceApprove(address(ROUTER), amountUSDC);
 
         uint256 minToken = _applyBps(amountUSDC, 10_000 - slippageBps);
         uint256 minEth = _applyBps(amountETH, 10_000 - slippageBps);
 
-        (, , uint256 liquidity) = router.addLiquidityETH{value: amountETH}(
-            address(usdc),
+        (, , uint256 liquidity) = ROUTER.addLiquidityETH{value: amountETH}(
+            address(USDC),
             amountUSDC,
             minToken,
             minEth,
@@ -107,7 +107,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
             block.timestamp + 15 minutes
         );
 
-        uint256 usdcUsed = balanceBeforeUSDC + amountUSDC - usdc.balanceOf(address(this));
+        uint256 usdcUsed = balanceBeforeUSDC + amountUSDC - USDC.balanceOf(address(this));
         uint256 ethUsed = ethBalanceBefore + amountETH - address(this).balance;
         uint256 ethRefund = amountETH - ethUsed;
 
@@ -118,7 +118,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
 
         uint256 usdcRefund = amountUSDC - usdcUsed;
         if (usdcRefund > 0) {
-            usdc.safeTransfer(msg.sender, usdcRefund);
+            USDC.safeTransfer(msg.sender, usdcRefund);
         }
 
         sharesOf[msg.sender] += liquidity;
@@ -153,15 +153,15 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         totalPrincipalUsdc = principalUsdcBefore - userUsdcPrincipal;
 
         uint256 ethBefore = address(this).balance;
-        uint256 usdcBefore = usdc.balanceOf(address(this));
-        uint256 wethBefore = IERC20(address(weth)).balanceOf(address(this));
+        uint256 usdcBefore = USDC.balanceOf(address(this));
+        uint256 wethBefore = IERC20(address(WETH)).balanceOf(address(this));
 
-        usdc.forceApprove(address(router), 0);
+        USDC.forceApprove(address(ROUTER), 0);
 
         uint256 ethOut;
         uint256 usdcOut;
-        (usdcOut, ethOut) = router.removeLiquidityETH(
-            address(usdc),
+        (usdcOut, ethOut) = ROUTER.removeLiquidityETH(
+            address(USDC),
             lpAmount,
             0,
             0,
@@ -179,25 +179,25 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         if (totalShares == 0) {
             uint256 debtRemaining = borrowedWeth;
             if (debtRemaining > 0) {
-                uint256 usdcBal = usdc.balanceOf(address(this));
+                uint256 usdcBal = USDC.balanceOf(address(this));
                 if (usdcBal > 0) {
-                    _swapExact(address(usdc), address(weth), usdcBal);
+                    _swapExact(address(USDC), address(WETH), usdcBal);
                 }
 
-                uint256 wethBal = IERC20(address(weth)).balanceOf(address(this));
+                uint256 wethBal = IERC20(address(WETH)).balanceOf(address(this));
                 uint256 repayAmount = wethBal < debtRemaining ? wethBal : debtRemaining;
                 if (repayAmount > 0) {
-                    IERC20(address(weth)).forceApprove(address(pool), 0);
-                    IERC20(address(weth)).forceApprove(address(pool), repayAmount);
-                    pool.repay(address(weth), repayAmount, 2, address(this));
+                    IERC20(address(WETH)).forceApprove(address(POOL), 0);
+                    IERC20(address(WETH)).forceApprove(address(POOL), repayAmount);
+                    POOL.repay(address(WETH), repayAmount, 2, address(this));
                     borrowedWeth -= repayAmount;
                 }
                 if (borrowedWeth > 0) revert NotEnoughLiquidity();
             }
 
-            uint256 remainingWeth = IERC20(address(weth)).balanceOf(address(this));
+            uint256 remainingWeth = IERC20(address(WETH)).balanceOf(address(this));
             if (remainingWeth > 0) {
-                weth.withdraw(remainingWeth);
+                WETH.withdraw(remainingWeth);
             }
 
             uint256 finalEth = address(this).balance;
@@ -206,23 +206,23 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
                 require(ok, "ETH_SEND_FAILED");
             }
 
-            uint256 finalUsdc = usdc.balanceOf(address(this));
+            uint256 finalUsdc = USDC.balanceOf(address(this));
             if (finalUsdc > 0) {
-                usdc.safeTransfer(msg.sender, finalUsdc);
+                USDC.safeTransfer(msg.sender, finalUsdc);
             }
         } else {
             // Proportional LP exit proceeds are already held here; only the withdrawn LP share leaves the vault.
             uint256 deltaEth = address(this).balance - ethBefore;
-            uint256 currentUsdc = usdc.balanceOf(address(this));
+            uint256 currentUsdc = USDC.balanceOf(address(this));
             uint256 deltaUsdc = currentUsdc > usdcBefore ? currentUsdc - usdcBefore : 0;
             if (deltaEth > 0) {
                 (bool ok,) = msg.sender.call{value: deltaEth}("");
                 require(ok, "ETH_SEND_FAILED");
             }
             if (deltaUsdc > 0) {
-                usdc.safeTransfer(msg.sender, deltaUsdc);
+                USDC.safeTransfer(msg.sender, deltaUsdc);
             }
-            uint256 deltaWeth = IERC20(address(weth)).balanceOf(address(this)) - wethBefore;
+            uint256 deltaWeth = IERC20(address(WETH)).balanceOf(address(this)) - wethBefore;
             if (deltaWeth > 0) {
                 // Keep WETH inside the vault for remaining shares in the partial-withdraw case.
             }
@@ -238,10 +238,10 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     /// @notice Return the current LP delta of the whole vault, in WETH units.
     /// @dev For a Uniswap V2 ETH/USDC pool this equals the vault's proportional ETH reserve exposure.
     function getCurrentDelta() public view returns (uint256) {
-        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
-        address token0 = pair.token0();
-        uint256 reserveEth = token0 == address(weth) ? uint256(reserve0) : uint256(reserve1);
-        uint256 supply = pair.totalSupply();
+        (uint112 reserve0, uint112 reserve1,) = PAIR.getReserves();
+        address token0 = PAIR.token0();
+        uint256 reserveEth = token0 == address(WETH) ? uint256(reserve0) : uint256(reserve1);
+        uint256 supply = PAIR.totalSupply();
         if (supply == 0 || reserveEth == 0 || totalShares == 0) {
             return 0;
         }
@@ -321,54 +321,59 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     function _borrowAndSellWeth(uint256 amountWeth) internal {
-        pool.borrow(address(weth), amountWeth, 2, 0, address(this));
-        _swapExact(address(weth), address(usdc), amountWeth);
+        POOL.borrow(address(WETH), amountWeth, 2, 0, address(this));
     }
 
     function _buyWethAndRepay(uint256 amountWeth) internal returns (uint256 repaid) {
-        uint256 usdcNeeded = _quoteExactOut(address(usdc), address(weth), amountWeth);
-        uint256 usdcBalance = usdc.balanceOf(address(this));
-        if (usdcNeeded > usdcBalance) {
-            usdcNeeded = usdcBalance;
+        uint256 wethBal = IERC20(address(WETH)).balanceOf(address(this));
+        if (wethBal < amountWeth) {
+            uint256 missingWeth = amountWeth - wethBal;
+            uint256 usdcNeeded = _quoteExactOut(address(USDC), address(WETH), missingWeth);
+            uint256 usdcBalance = USDC.balanceOf(address(this));
+            if (usdcNeeded > usdcBalance) {
+                usdcNeeded = usdcBalance;
+            }
+            if (usdcNeeded > 0) {
+                _swapExact(address(USDC), address(WETH), usdcNeeded);
+            }
         }
-        if (usdcNeeded > 0) {
-            _swapExact(address(usdc), address(weth), usdcNeeded);
-        }
-
-        uint256 wethBal = IERC20(address(weth)).balanceOf(address(this));
+        wethBal = IERC20(address(WETH)).balanceOf(address(this));
         repaid = amountWeth;
         if (wethBal < repaid) {
             repaid = wethBal;
         }
         if (repaid == 0) return 0;
 
-        IERC20(address(weth)).forceApprove(address(pool), 0);
-        IERC20(address(weth)).forceApprove(address(pool), repaid);
-        pool.repay(address(weth), repaid, 2, address(this));
+        IERC20(address(WETH)).forceApprove(address(POOL), 0);
+        IERC20(address(WETH)).forceApprove(address(POOL), repaid);
+        POOL.repay(address(WETH), repaid, 2, address(this));
         return repaid;
     }
 
     function _repayDebtWithAvailableBalances(uint256 amountWeth) internal returns (uint256 debtClosed) {
-        uint256 usdcNeeded = _quoteExactOut(address(usdc), address(weth), amountWeth);
-        uint256 usdcBalance = usdc.balanceOf(address(this));
-        if (usdcNeeded > usdcBalance) {
-            usdcNeeded = usdcBalance;
+        uint256 wethBal = IERC20(address(WETH)).balanceOf(address(this));
+        if (wethBal < amountWeth) {
+            uint256 missingWeth = amountWeth - wethBal;
+            uint256 usdcNeeded = _quoteExactOut(address(USDC), address(WETH), missingWeth);
+            uint256 usdcBalance = USDC.balanceOf(address(this));
+            if (usdcNeeded > usdcBalance) {
+                usdcNeeded = usdcBalance;
+            }
+            if (usdcNeeded > 0) {
+                _swapExact(address(USDC), address(WETH), usdcNeeded);
+            }
         }
 
-        if (usdcNeeded > 0) {
-            _swapExact(address(usdc), address(weth), usdcNeeded);
-        }
-
-        uint256 wethBal = IERC20(address(weth)).balanceOf(address(this));
+        wethBal = IERC20(address(WETH)).balanceOf(address(this));
         debtClosed = amountWeth;
         if (wethBal < debtClosed) {
             debtClosed = wethBal;
         }
 
         if (debtClosed > 0) {
-            IERC20(address(weth)).forceApprove(address(pool), 0);
-            IERC20(address(weth)).forceApprove(address(pool), debtClosed);
-            pool.repay(address(weth), debtClosed, 2, address(this));
+            IERC20(address(WETH)).forceApprove(address(POOL), 0);
+            IERC20(address(WETH)).forceApprove(address(POOL), debtClosed);
+            POOL.repay(address(WETH), debtClosed, 2, address(this));
             borrowedWeth -= debtClosed;
         }
     }
@@ -378,13 +383,13 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         path[0] = tokenIn;
         path[1] = tokenOut;
 
-        uint256 expectedOut = router.getAmountsOut(amountIn, path)[1];
+        uint256 expectedOut = ROUTER.getAmountsOut(amountIn, path)[1];
         uint256 minOut = _applyBps(expectedOut, 10_000 - slippageBps);
 
-        IERC20(tokenIn).forceApprove(address(router), 0);
-        IERC20(tokenIn).forceApprove(address(router), amountIn);
+        IERC20(tokenIn).forceApprove(address(ROUTER), 0);
+        IERC20(tokenIn).forceApprove(address(ROUTER), amountIn);
 
-        uint256[] memory amounts = router.swapExactTokensForTokens(
+        uint256[] memory amounts = ROUTER.swapExactTokensForTokens(
             amountIn,
             minOut,
             path,
@@ -399,12 +404,12 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         path[0] = tokenIn;
         path[1] = tokenOut;
 
-        uint256[] memory amounts = router.getAmountsOut(1e18, path);
+        uint256[] memory amounts = ROUTER.getAmountsOut(1e18, path);
         if (amounts[1] == 0) return 0;
 
         // approximate inverse quote, sufficient for MVP + keeper control loop
         uint256 price = amounts[1];
-        if (tokenIn == address(usdc) && tokenOut == address(weth)) {
+        if (tokenIn == address(USDC) && tokenOut == address(WETH)) {
             // price is WETH out for 1e18 USDC input; invert.
             return amountOutDesired * 1e18 / price;
         }
@@ -412,37 +417,37 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     function _priceEthUsd1e18() internal view returns (uint256) {
-        (, int256 answer,, uint256 updatedAt,) = ethUsdOracle.latestRoundData();
+        (, int256 answer,, uint256 updatedAt,) = ETH_USD_ORACLE.latestRoundData();
         if (answer <= 0) revert PriceFeedStale();
         if (block.timestamp - updatedAt > minOracleStaleness) revert PriceFeedStale();
         uint256 raw = uint256(answer);
-        if (oracleDecimals >= 18) {
-            return raw / (10 ** (oracleDecimals - 18));
+        if (ORACLE_DECIMALS >= 18) {
+            return raw / (10 ** (ORACLE_DECIMALS - 18));
         }
-        return raw * (10 ** (18 - oracleDecimals));
+        return raw * (10 ** (18 - ORACLE_DECIMALS));
     }
 
     function _currentLpValue1e18(uint256 priceEthUsd1e18) internal view returns (uint256) {
-        uint256 lpShare = pair.balanceOf(address(this));
-        uint256 supply = pair.totalSupply();
+        uint256 lpShare = PAIR.balanceOf(address(this));
+        uint256 supply = PAIR.totalSupply();
         if (supply == 0 || lpShare == 0) return 0;
 
-        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
-        uint256 reserveEth = pair.token0() == address(weth) ? uint256(reserve0) : uint256(reserve1);
-        uint256 reserveUsdc = pair.token0() == address(weth) ? uint256(reserve1) : uint256(reserve0);
+        (uint112 reserve0, uint112 reserve1,) = PAIR.getReserves();
+        uint256 reserveEth = PAIR.token0() == address(WETH) ? uint256(reserve0) : uint256(reserve1);
+        uint256 reserveUsdc = PAIR.token0() == address(WETH) ? uint256(reserve1) : uint256(reserve0);
 
         uint256 userEth = reserveEth * lpShare / supply;
         uint256 userUsdc = reserveUsdc * lpShare / supply;
 
         uint256 ethValue = userEth * priceEthUsd1e18 / 1e18;
-        uint256 usdcScale = 10 ** (18 - usdcDecimals);
+        uint256 usdcScale = 10 ** (18 - USDC_DECIMALS);
         uint256 usdcValue = userUsdc * usdcScale;
         return ethValue + usdcValue;
     }
 
     function _hodlValue1e18(uint256 priceEthUsd1e18) internal view returns (uint256) {
         uint256 ethValue = totalPrincipalEth * priceEthUsd1e18 / 1e18;
-        uint256 usdcScale = 10 ** (18 - usdcDecimals);
+        uint256 usdcScale = 10 ** (18 - USDC_DECIMALS);
         uint256 usdcValue = totalPrincipalUsdc * usdcScale;
         return ethValue + usdcValue;
     }
@@ -452,16 +457,16 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     }
 
     function _validatePair() internal view {
-        address token0 = pair.token0();
-        address token1 = pair.token1();
-        bool ok = (token0 == address(weth) && token1 == address(usdc)) || (token0 == address(usdc) && token1 == address(weth));
+        address token0 = PAIR.token0();
+        address token1 = PAIR.token1();
+        bool ok = (token0 == address(WETH) && token1 == address(USDC)) || (token0 == address(USDC) && token1 == address(WETH));
         if (!ok) revert InvalidPair();
     }
 
     function _approveInfinite() internal {
-        usdc.forceApprove(address(router), type(uint256).max);
-        usdc.forceApprove(address(pool), type(uint256).max);
-        IERC20(address(weth)).forceApprove(address(router), type(uint256).max);
-        IERC20(address(weth)).forceApprove(address(pool), type(uint256).max);
+        USDC.forceApprove(address(ROUTER), type(uint256).max);
+        USDC.forceApprove(address(POOL), type(uint256).max);
+        IERC20(address(WETH)).forceApprove(address(ROUTER), type(uint256).max);
+        IERC20(address(WETH)).forceApprove(address(POOL), type(uint256).max);
     }
 }

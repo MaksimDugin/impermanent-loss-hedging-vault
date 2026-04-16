@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./MockERC20.sol";
+import {MockERC20} from "./MockERC20.sol";
 
 contract MockUniswapV2Pair is MockERC20 {
     address public immutable token0;
@@ -46,7 +46,9 @@ contract MockUniswapV2Pair is MockERC20 {
 
     function setReserves(uint256 newReserve0, uint256 newReserve1) external onlyRouter {
         require(newReserve0 <= type(uint112).max && newReserve1 <= type(uint112).max, "OVERFLOW");
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve0 = uint112(newReserve0);
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve1 = uint112(newReserve1);
         blockTimestampLast = uint32(block.timestamp);
     }
@@ -63,7 +65,9 @@ contract MockUniswapV2Pair is MockERC20 {
         // token0 is expected to be WETH in the tests
         newReserveEth = _sqrt((k * 1e18) / newPriceUsdcPerEth6);
         newReserveUsdc = k / newReserveEth;
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve0 = uint112(newReserveEth);
+        // forge-lint: disable-next-line(unsafe-typecast)
         reserve1 = uint112(newReserveUsdc);
         blockTimestampLast = uint32(block.timestamp);
     }
