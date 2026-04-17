@@ -27,11 +27,22 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     error PriceFeedStale();
     error DeadlineExpired();
     error NotEnoughLiquidity();
+    error CircuitBreakerTriggered();
+    error BorrowCapExceeded();
+    error HealthFactorTooLow();
+    error DebtLimitExceeded();
 
     event Deposited(address indexed user, uint256 amountEth, uint256 amountUsdc, uint256 lpMinted, uint256 debtOpened);
     event Withdrawn(address indexed user, uint256 lpBurned, uint256 ethOut, uint256 usdcOut, uint256 debtRepaid);
     event Rebalanced(uint256 targetDebt, uint256 currentDebt, uint256 deltaAbs, bool increased);
     event ParamsUpdated(uint256 rebalanceThresholdBps, uint256 slippageBps, uint256 rebalanceIntervalBlocks);
+    event RiskParamsUpdated(
+        uint256 maxLtvBps,
+        uint256 liquidationThresholdBps,
+        uint256 minHealthFactorBps,
+        uint256 borrowCapWeth,
+        uint256 variableBorrowRateBps
+    );
     event PausedVault();
     event UnpausedVault();
 
@@ -56,6 +67,15 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
 
     uint256 public borrowedWeth; // debt in WETH units (18 decimals)
     uint256 public minOracleStaleness = 2 hours;
+    uint256 public maxOracleDeviationBps = 500; // 5% max oracle/spot deviation
+    uint256 public maxSwapPortionBps = 2_500; // 25% of one-sided reserve per swap
+
+    uint256 public maxLtvBps = 6_000; // 60%
+    uint256 public liquidationThresholdBps = 8_000; // 80%
+    uint256 public minHealthFactorBps = 11_000; // 1.10
+    uint256 public borrowCapWeth = 1_000 ether;
+    uint256 public variableBorrowRateBps = 300; // 3% APR linear in this MVP
+    uint256 public lastDebtAccrual;
 
     mapping(address => uint256) public sharesOf;
 
@@ -77,6 +97,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         WETH = IWETH9(weth_);
         USDC_DECIMALS = usdcDecimals_;
         ORACLE_DECIMALS = ETH_USD_ORACLE.decimals();
+        lastDebtAccrual = block.timestamp;
 
         _validatePair();
         _approveInfinite();
@@ -85,8 +106,25 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     /// @notice Deposit ETH + USDC, add liquidity to Uniswap V2, then open/adjust the short hedge on Aave.
     /// @dev Slippage and fee assumptions matter here: the router quote is used only as a minimum bound.
     function deposit(uint256 amountEth, uint256 amountUsdc) external payable nonReentrant whenNotPaused {
+        uint256 minToken = _applyBps(amountUsdc, 10_000 - slippageBps);
+        uint256 minEth = _applyBps(amountEth, 10_000 - slippageBps);
+        _depositWithMin(amountEth, amountUsdc, minEth, minToken);
+    }
+
+    function depositWithMin(
+        uint256 amountEth,
+        uint256 amountUsdc,
+        uint256 minEth,
+        uint256 minUsdc
+    ) public payable nonReentrant whenNotPaused {
+        _depositWithMin(amountEth, amountUsdc, minEth, minUsdc);
+    }
+
+    function _depositWithMin(uint256 amountEth, uint256 amountUsdc, uint256 minEth, uint256 minUsdc) internal {
         if (amountEth == 0 || amountUsdc == 0) revert ZeroAmount();
         if (msg.value != amountEth) revert ZeroAmount();
+        _accrueDebt();
+        _assertOracleSafety();
 
         uint256 balanceBeforeUsdc = USDC.balanceOf(address(this));
         uint256 ethBalanceBefore = address(this).balance - amountEth;
@@ -95,13 +133,10 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         USDC.forceApprove(address(ROUTER), 0);
         USDC.forceApprove(address(ROUTER), amountUsdc);
 
-        uint256 minToken = _applyBps(amountUsdc, 10_000 - slippageBps);
-        uint256 minEth = _applyBps(amountEth, 10_000 - slippageBps);
-
         (, , uint256 liquidity) = ROUTER.addLiquidityETH{value: amountEth}(
             address(USDC),
             amountUsdc,
-            minToken,
+            minUsdc,
             minEth,
             address(this),
             block.timestamp + 15 minutes
@@ -127,16 +162,19 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         totalPrincipalUsdc += usdcUsed;
 
         uint256 debtOpened = _rebalanceToTarget();
+        _ensureRiskAfterDebtChange();
 
         emit Deposited(msg.sender, ethUsed, usdcUsed, liquidity, debtOpened);
     }
 
     /// @notice Withdraw a proportional share of vault LP and unwind the matching debt.
     /// @dev For production, consider adding explicit accounting of swap fees and price-impact on exit.
-    function withdraw(uint256 lpAmount) external nonReentrant whenNotPaused {
+    function withdraw(uint256 lpAmount) external nonReentrant {
         if (lpAmount == 0) revert ZeroAmount();
         if (sharesOf[msg.sender] < lpAmount) revert InsufficientShares();
         if (totalShares == 0) revert NotEnoughLiquidity();
+        _accrueDebt();
+        _assertOracleSafety();
 
         uint256 totalSharesBefore = totalShares;
         uint256 principalEthBefore = totalPrincipalEth;
@@ -232,7 +270,10 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
     /// @notice Public keeper-style rebalance entrypoint.
     /// @dev The amount of ETH to borrow/repay is estimated from current LP delta and the Uniswap V2 reserves.
     function rebalance() public nonReentrant whenNotPaused returns (uint256 debtChange) {
+        _accrueDebt();
+        _assertOracleSafety();
         debtChange = _rebalanceToTarget();
+        _ensureRiskAfterDebtChange();
     }
 
     /// @notice Return the current LP delta of the whole vault, in WETH units.
@@ -263,7 +304,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
 
     /// @notice Return current hedge debt in WETH units.
     function getCurrentDebt() external view returns (uint256) {
-        return borrowedWeth;
+        return _currentDebtWithAccrual();
     }
 
     function pause() external onlyOwner {
@@ -289,10 +330,69 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         minOracleStaleness = maxAge;
     }
 
+    function setOracleCircuitBreaker(uint256 maxDeviationBps) external onlyOwner {
+        require(maxDeviationBps <= 2_000, "DEVIATION_TOO_HIGH");
+        maxOracleDeviationBps = maxDeviationBps;
+    }
+
+    function setSwapRiskParams(uint256 maxSwapPortionBps_, uint256 slippageBps_) external onlyOwner {
+        require(maxSwapPortionBps_ > 0 && maxSwapPortionBps_ <= 8_000, "SWAP_PORTION_INVALID");
+        require(slippageBps_ <= 2_000, "SLIPPAGE_TOO_HIGH");
+        maxSwapPortionBps = maxSwapPortionBps_;
+        slippageBps = slippageBps_;
+    }
+
+    function setCreditRiskParams(
+        uint256 maxLtvBps_,
+        uint256 liquidationThresholdBps_,
+        uint256 minHealthFactorBps_,
+        uint256 borrowCapWeth_,
+        uint256 variableBorrowRateBps_
+    ) external onlyOwner {
+        require(maxLtvBps_ <= liquidationThresholdBps_, "LTV_GT_LT");
+        require(liquidationThresholdBps_ <= 9_500, "LT_TOO_HIGH");
+        require(minHealthFactorBps_ >= 10_000, "HF_INVALID");
+        maxLtvBps = maxLtvBps_;
+        liquidationThresholdBps = liquidationThresholdBps_;
+        minHealthFactorBps = minHealthFactorBps_;
+        borrowCapWeth = borrowCapWeth_;
+        variableBorrowRateBps = variableBorrowRateBps_;
+        emit RiskParamsUpdated(maxLtvBps_, liquidationThresholdBps_, minHealthFactorBps_, borrowCapWeth_, variableBorrowRateBps_);
+    }
+
+    function getHealthFactorBps() external view returns (uint256) {
+        uint256 debt = _currentDebtWithAccrual();
+        if (debt == 0) return type(uint256).max;
+        uint256 debtUsd = debt * _priceEthUsd1e18() / 1e18;
+        if (debtUsd == 0) return type(uint256).max;
+        uint256 collateralUsd = _currentLpValue1e18(_priceEthUsd1e18());
+        uint256 adjustedCollateral = collateralUsd * liquidationThresholdBps / 10_000;
+        return adjustedCollateral * 10_000 / debtUsd;
+    }
+
+    function getCapitalPosition1e18()
+        external
+        view
+        returns (uint256 lpAssetValue, uint256 debtValue, int256 netAssetValue)
+    {
+        uint256 price = _priceEthUsd1e18();
+        lpAssetValue = _currentLpValue1e18(price);
+        debtValue = _currentDebtWithAccrual() * price / 1e18;
+        if (lpAssetValue >= debtValue) {
+            netAssetValue = int256(lpAssetValue - debtValue);
+        } else {
+            netAssetValue = -int256(debtValue - lpAssetValue);
+        }
+    }
+
     receive() external payable {}
 
     function _rebalanceToTarget() internal returns (uint256 debtChange) {
         uint256 targetDebt = getCurrentDelta();
+        uint256 debtLimit = _maxDebtAllowedByRisk();
+        if (targetDebt > debtLimit) {
+            targetDebt = debtLimit;
+        }
         uint256 currentDebt = borrowedWeth;
 
         uint256 threshold = targetDebt * rebalanceThresholdBps / 10_000;
@@ -313,6 +413,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
             debtChange = targetDebt - currentDebt;
             _borrowAndSellWeth(debtChange);
             borrowedWeth = targetDebt;
+            _ensureDebtWithinLimits();
             emit Rebalanced(targetDebt, currentDebt, debtChange, true);
         } else {
             debtChange = currentDebt - targetDebt;
@@ -340,6 +441,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         }
         if (wethBal < amountWeth) {
             uint256 missingWeth = amountWeth - wethBal;
+            _enforceSwapPortionLimit(address(USDC), address(WETH), _quoteExactOut(address(USDC), address(WETH), missingWeth));
             uint256 usdcNeeded = _quoteExactOut(address(USDC), address(WETH), missingWeth);
             uint256 usdcBalance = USDC.balanceOf(address(this));
             if (usdcNeeded > usdcBalance) {
@@ -375,6 +477,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
         }
         if (wethBal < amountWeth) {
             uint256 missingWeth = amountWeth - wethBal;
+            _enforceSwapPortionLimit(address(USDC), address(WETH), _quoteExactOut(address(USDC), address(WETH), missingWeth));
             uint256 usdcNeeded = _quoteExactOut(address(USDC), address(WETH), missingWeth);
             uint256 usdcBalance = USDC.balanceOf(address(this));
             if (usdcNeeded > usdcBalance) {
@@ -406,6 +509,7 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
 
         uint256 expectedOut = ROUTER.getAmountsOut(amountIn, path)[1];
         uint256 minOut = _applyBps(expectedOut, 10_000 - slippageBps);
+        _enforceSwapPortionLimit(tokenIn, tokenOut, amountIn);
 
         IERC20(tokenIn).forceApprove(address(ROUTER), 0);
         IERC20(tokenIn).forceApprove(address(ROUTER), amountIn);
@@ -448,6 +552,86 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
             return raw / (10 ** (ORACLE_DECIMALS - 18));
         }
         return raw * (10 ** (18 - ORACLE_DECIMALS));
+    }
+
+    function _currentDebtWithAccrual() internal view returns (uint256) {
+        if (borrowedWeth == 0) return 0;
+        uint256 dt = block.timestamp - lastDebtAccrual;
+        if (dt == 0 || variableBorrowRateBps == 0) return borrowedWeth;
+        uint256 year = 365 days;
+        uint256 accrued = borrowedWeth * variableBorrowRateBps * dt / (10_000 * year);
+        return borrowedWeth + accrued;
+    }
+
+    function _accrueDebt() internal {
+        uint256 debt = _currentDebtWithAccrual();
+        borrowedWeth = debt;
+        lastDebtAccrual = block.timestamp;
+    }
+
+    function _ensureDebtWithinLimits() internal view {
+        if (borrowedWeth > borrowCapWeth) revert BorrowCapExceeded();
+        if (borrowedWeth > _maxDebtAllowedByRisk()) revert DebtLimitExceeded();
+    }
+
+    function _maxDebtAllowedByRisk() internal view returns (uint256) {
+        uint256 price = _priceEthUsd1e18();
+        uint256 collateralUsd = _currentLpValue1e18(price);
+        if (collateralUsd == 0) return 0;
+        uint256 maxDebtUsd = collateralUsd * maxLtvBps / 10_000;
+        uint256 maxDebtByLtv = maxDebtUsd * 1e18 / price;
+        return maxDebtByLtv < borrowCapWeth ? maxDebtByLtv : borrowCapWeth;
+    }
+
+    function _ensureRiskAfterDebtChange() internal view {
+        _ensureDebtWithinLimits();
+        if (borrowedWeth == 0) return;
+        uint256 price = _priceEthUsd1e18();
+        uint256 debtUsd = borrowedWeth * price / 1e18;
+        if (debtUsd == 0) return;
+        uint256 collateralUsd = _currentLpValue1e18(price);
+        uint256 adjustedCollateral = collateralUsd * liquidationThresholdBps / 10_000;
+        uint256 hfBps = adjustedCollateral * 10_000 / debtUsd;
+        if (hfBps < minHealthFactorBps) revert HealthFactorTooLow();
+    }
+
+    function _assertOracleSafety() internal view {
+        uint256 oraclePrice = _priceEthUsd1e18();
+        uint256 spotPrice = _spotEthUsd1e18FromPair();
+        if (spotPrice == 0) {
+            // bootstrap mode: no reliable spot yet.
+            return;
+        }
+
+        uint256 diff = oraclePrice > spotPrice ? oraclePrice - spotPrice : spotPrice - oraclePrice;
+        uint256 deviationBps = diff * 10_000 / spotPrice;
+        if (deviationBps > maxOracleDeviationBps) revert CircuitBreakerTriggered();
+    }
+
+    function _spotEthUsd1e18FromPair() internal view returns (uint256) {
+        (uint112 reserve0, uint112 reserve1,) = PAIR.getReserves();
+        uint256 reserveEth = PAIR.token0() == address(WETH) ? uint256(reserve0) : uint256(reserve1);
+        uint256 reserveUsdc = PAIR.token0() == address(WETH) ? uint256(reserve1) : uint256(reserve0);
+        if (reserveEth == 0 || reserveUsdc == 0) return 0;
+        uint256 usdcScale = 10 ** (18 - USDC_DECIMALS);
+        uint256 reserveUsdc1e18 = reserveUsdc * usdcScale;
+        return reserveUsdc1e18 * 1e18 / reserveEth;
+    }
+
+    function _enforceSwapPortionLimit(address tokenIn, address tokenOut, uint256 amountIn) internal view {
+        if (amountIn == 0) return;
+        (uint112 reserve0, uint112 reserve1,) = PAIR.getReserves();
+        uint256 reserveIn;
+        if (PAIR.token0() == tokenIn && PAIR.token1() == tokenOut) {
+            reserveIn = uint256(reserve0);
+        } else if (PAIR.token0() == tokenOut && PAIR.token1() == tokenIn) {
+            reserveIn = uint256(reserve1);
+        } else {
+            revert InvalidPair();
+        }
+        if (reserveIn == 0) revert SlippageExceeded();
+        uint256 portionBps = amountIn * 10_000 / reserveIn;
+        if (portionBps > maxSwapPortionBps) revert SlippageExceeded();
     }
 
     function _currentLpValue1e18(uint256 priceEthUsd1e18) internal view returns (uint256) {

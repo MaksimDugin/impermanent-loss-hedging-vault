@@ -10,6 +10,7 @@ contract MockAavePool is IPool {
     using SafeERC20 for IERC20;
 
     MockWETH9 public immutable WETH;
+    bool public failBorrow;
 
     constructor(address weth_) {
         WETH = MockWETH9(payable(weth_));
@@ -24,7 +25,12 @@ contract MockAavePool is IPool {
 
     function borrow(address asset, uint256 amount, uint256, uint16, address onBehalfOf) external override {
         require(asset == address(WETH), "ASSET");
+        require(!failBorrow, "MOCK_BORROW_FAILED");
         WETH.mint(onBehalfOf, amount);
+    }
+
+    function setFailBorrow(bool shouldFail) external {
+        failBorrow = shouldFail;
     }
 
     function repay(address asset, uint256 amount, uint256, address onBehalfOf) external override returns (uint256) {
