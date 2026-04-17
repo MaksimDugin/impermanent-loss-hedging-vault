@@ -260,7 +260,8 @@ contract ImpermanentLossHedgingVault is Ownable, Pausable, ReentrancyGuard {
             if (deltaUsdc > 0) {
                 USDC.safeTransfer(msg.sender, deltaUsdc);
             }
-            uint256 deltaWeth = IERC20(address(WETH)).balanceOf(address(this)) - wethBefore;
+            uint256 wethAfter = IERC20(address(WETH)).balanceOf(address(this));
+            uint256 deltaWeth = wethAfter > wethBefore ? wethAfter - wethBefore : 0;
             if (deltaWeth > 0) {
                 // Keep WETH inside the vault for remaining shares in the partial-withdraw case.
             }
