@@ -61,6 +61,10 @@ contract BacktestVaultScenarios is Test {
         _seedStartBalances(LP_USER);
         _seedStartBalances(HEDGE_USER);
 
+        // Seed router balances so mock swaps can always pay tokenOut on both legs.
+        deal(address(usdc), address(router), 10_000_000e6);
+        deal(address(weth), address(router), 10_000 ether);
+
         vm.prank(LP_USER);
         usdc.approve(address(router), type(uint256).max);
 
