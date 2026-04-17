@@ -122,11 +122,19 @@ contract BacktestVaultScenarios is Test {
         internal
         returns (StrategyMetrics memory m)
     {
+        emit log_named_uint("HOLD before", _walletValueUsd1e18(HOLD_USER, _priceTo1e18(shocksUsd6[0])));
+        emit log_named_uint("LP before", _walletValueUsd1e18(LP_USER, _priceTo1e18(shocksUsd6[0])));
+        emit log_named_uint("HEDGE before", _walletValueUsd1e18(HEDGE_USER, _priceTo1e18(shocksUsd6[0])));
+
         _runHoldStrategy(shocksUsd6);
         _runPlainLpStrategy(shocksUsd6);
         _runHedgedVaultStrategy(shocksUsd6, stepTime, stepBlocks);
 
         uint256 finalPrice1e18 = _priceTo1e18(shocksUsd6[shocksUsd6.length - 1]);
+
+        emit log_named_uint("HOLD after", _walletValueUsd1e18(HOLD_USER, finalPrice1e18));
+        emit log_named_uint("LP after", _walletValueUsd1e18(LP_USER, finalPrice1e18));
+        emit log_named_uint("HEDGE after", _walletValueUsd1e18(HEDGE_USER, finalPrice1e18));
 
         m.holdUsd1e18 = _walletValueUsd1e18(HOLD_USER, finalPrice1e18);
         m.lpUsd1e18 = _walletValueUsd1e18(LP_USER, finalPrice1e18);
@@ -199,11 +207,24 @@ contract BacktestVaultScenarios is Test {
     function _seedStartBalances(address user) internal {
         deal(user, INITIAL_ETH);
         deal(address(usdc), user, INITIAL_USDC);
+
+        emit log_named_uint("seed ETH", user.balance);
+        emit log_named_uint("seed USDC", usdc.balanceOf(user));
     }
 
-    function _walletValueUsd1e18(address user, uint256 ethPrice1e18) internal view returns (uint256) {
-        uint256 ethUsd = user.balance * ethPrice1e18 / 1e18;
-        uint256 usdcUsd = usdc.balanceOf(user) * 1e12;
+    function _walletValueUsd1e18(address user, uint256 ethPrice1e18) internal returns (uint256) {
+        uint256 ethBal = user.balance;
+        uint256 usdcBal = usdc.balanceOf(user);
+
+        emit log_named_uint("wallet ETH", ethBal);
+        emit log_named_uint("wallet USDC", usdcBal);
+
+        uint256 ethUsd = ethBal * ethPrice1e18 / 1e18;
+        uint256 usdcUsd = usdcBal * 1e12;
+
+        emit log_named_uint("wallet ETH USD", ethUsd);
+        emit log_named_uint("wallet USDC USD", usdcUsd);
+
         return ethUsd + usdcUsd;
     }
 
